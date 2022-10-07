@@ -295,18 +295,18 @@ def listen_and_commit(conn):
 
     while match_ids:
         match = match_ids.popleft()
+
+        # TODO: this is actually a hacky fix for some kind of logic
+        # flaw where we try to process a match twice. I think it may
+        # have something to do with how `seed_matches` gets handled.
+        if match in seen_matches or match["info"]["gameMode"] != "CLASSIC":
+            continue
+
         print(f"processing {match}, # players: {len(seen_players)}, # matches processed: {len(seen_matches)}, # matches enqueued: {len(match_ids)}")
 
         # Grab match information
-        data = get_match_by_match_id(match)
         seen_matches.add(match)
-
-        # Add players from this match to seen_players
-        # TODO: should this actually be here?
-
-        # match["info"]["gameMode"] == "CLASSIC"
-        # should drop games that contain very new champions
-        # match["info"]["participants"][some_number]
+        data = get_match_by_match_id(match)
 
         # Do some processing
         process_match(data, conn)
