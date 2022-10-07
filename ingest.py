@@ -215,8 +215,7 @@ def maybe_init_db(db_name="league.db"):
     
     else:
         print(f"{db_name} already exists, won't initialize")
-        return sqlite3.connect(db_name)
-    
+        return sqlite3.connect(db_name)    
 
 def delay(func):
     def inner(*args, **kwargs):
@@ -226,11 +225,13 @@ def delay(func):
     
     return inner
 
+
 @delay
 def get_player_info_by_summoner_name(summoner_name):
     url = "https://na1.api.riotgames.com"
     r = requests.get(f"{url}/lol/summoner/v4/summoners/by-name/{summoner_name}?api_key={API_KEY}")
     return r.json()
+
 
 @delay
 def get_matches_by_puuid(puuid):
@@ -238,11 +239,13 @@ def get_matches_by_puuid(puuid):
     r = requests.get(f"{url}/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=100&api_key={API_KEY}")
     return r.json()
 
+
 @delay
 def get_match_by_match_id(match_id):
     url = "https://americas.api.riotgames.com"
     r = requests.get(f"{url}/lol/match/v5/matches/{match_id}?api_key={API_KEY}")
     return r.json()
+
 
 def process_match(data, conn):
 
@@ -297,6 +300,9 @@ def listen_and_commit(conn):
         # Grab match information
         data = get_match_by_match_id(match)
         seen_matches.add(match)
+
+        # Add players from this match to seen_players
+        # TODO: should this actually be here?
 
         # match["info"]["gameMode"] == "CLASSIC"
         # should drop games that contain very new champions
