@@ -7,13 +7,9 @@ import time
 import traceback
 from collections import deque
 
-
-logging.getLogger().setLevel(logging.INFO)
-logging.basicConfig(format="[%(asctime)s][%(levelname)s][tid %(thread)d] %(message)s", datefmt="%H:%M:%S")
-
-
-CHAMPION_DATA_ENDPOINT = "https://ddragon.leagueoflegends.com/cdn/12.19.1/data/en_US/champion.json"
-DELAY = 120/100 # Limit is 100 requests every 2 minutes, or 20 requests in 1 second
+CHAMPION_DATA_URL = "https://ddragon.leagueoflegends.com/cdn/12.19.1/data/en_US/champion.json"
+DELAY = 120 / 100 # Limit is 100 requests every 2 minutes, or 20 requests in 1 
+                  # second
 
 MATCH_FIELDS = {
     "gameVersion": str,
@@ -121,7 +117,7 @@ def get_champion_data():
     champion.
     """
     
-    r = requests.get(CHAMPION_DATA_ENDPOINT)
+    r = requests.get(CHAMPION_DATA_URL)
     result = []
     tags = set()
 
@@ -146,7 +142,7 @@ def get_champion_data():
         result.append(champ_data)
 
     # Should be {"Assassin", "Marksman", "Support", "Fighter", "Mage", "Tank"}
-    assert(len(tags) == 6)
+    assert len(tags) == 6
     return result
 
 
@@ -277,7 +273,8 @@ def process_match(data, conn):
     (gameVersion, matchId, gameCreation, gameDuration, gameId, winner) 
     VALUES(?, ?, ?, ?, ?, ?)
     """, 
-    [info["gameVersion"], meta["matchId"], info["gameCreation"], info["gameDuration"], info["gameId"], winner])
+    [info["gameVersion"], meta["matchId"], info["gameCreation"], 
+    info["gameDuration"], info["gameId"], winner])
 
     # Now insert information about each of the participants:
     for participant in info["participants"]:
@@ -291,98 +288,133 @@ def process_match(data, conn):
             f"""
             INSERT INTO Participants VALUES({",".join(["?"] * (len(PARTICIPANT_FIELDS) + 1))})
             """,
-            values
-        )
+            values)
 
     conn.commit()
     logging.debug("Processed match data for %s in %f seconds", meta["matchId"], time.time() - now)
 
 
-def init_seed_data(seed_player, match_ids, seen_players, seen_matches, api_key):
-    seed_player = seed_player
-    seed_info = get_player_info_by_summoner_name(seed_player, api_key)
-    seen_players.add(seed_info["puuid"])
+def add_player_match_history(puuid, match_ids, seen_players, seen_matches, api_key):
+    """
+    Given `seed_player` (a PUUID), gets the most recent 100 matches played by
+    the player, adds the player to `seed_player`
+    """
+    logging.info("Adding match history for PUUID %s", puuid)
 
-    seed_matches = get_matches_by_puuid(seed_info["puuid"], api_key)
+    seen_players.add(puuid)
+    match_data = get_matches_by_puuid(puuid, api_key)
 
-    for match in seed_matches:
-        match_ids.append(match)
+    for match in match_data:
+        if match not in seen_matches:
+            match_ids.append(match)
 
 
-def listen_and_commit(match_ids, seen_players, seen_matches, api_key):
+def listen_and_commit(seed_player, seen_players, seen_matches, lock, api_key):
+
+    """
+    Per-thread method that performs a breadth-first search over the player
+    graph. `seen_players` consists of players whose match history has already
+    been fetched, and `seen_matches` consists of matches that have already been
+    processed; both are protected by `lock`.
+
+    For now, each thread runs until it encounters an exception, after which it
+    will shut down.
+    """
+
     conn = sqlite3.connect("league.db")
+    match_ids = deque()
+    seed_puuid = get_player_info_by_summoner_name(seed_player, api_key)["puuid"]
+
+    lock.acquire()
+    add_player_match_history(seed_puuid, match_ids, seen_players, seen_matches, api_key);
+    lock.release()
 
     while True:
         try:
             match = match_ids.popleft()
             
             # TODO: I'm pretty sure this being necessary is the result of a bug.
+            lock.acquire()
             if match in seen_matches:
                 continue
 
-            # Grab match information
             seen_matches.add(match)
+            lock.release()
+
             data = get_match_by_match_id(match, api_key)
 
+            lock.acquire()
             if len(seen_matches) % 10 == 0:
                 logging.info("Processed %d matches", len(seen_matches))
+            lock.release()
 
             if data["info"]["gameMode"] != "CLASSIC":
-                logging.debug("Match %s gamemode is %s, skipping", match, data["info"]["gameMode"])
+                logging.debug("Match %s gamemode is %s, skipping", match, 
+                    data["info"]["gameMode"])
                 continue
                 
             # Do some processing
             process_match(data, conn)
 
-            # Get list of all players in the match and add their recent
-            # match IDs to the queue. This might be seen by multiple threads
-            # simultaneously, but that's OK - we just care that the queue gets
-            # refilled, and if threads add more matches than necessary, all the
-            # better for us.
-            # TODO: Make this threadsafe; there's a small chance for a race
-            # condition that leads to a DB error.
+            # Get list of all players in the match and add their recent match 
+            # IDs to the queue.
             if len(match_ids) == 0:
+                lock.acquire()
+                
                 logging.info("Match queue is empty, enqueuing more")
-                queue_length = len(match_ids)
 
                 for puuid in data["metadata"]["participants"]:
                     if puuid not in seen_players:
-                        seen_players.add(puuid)
-                        match_data = get_matches_by_puuid(puuid, api_key)
-                        for match in match_data:
-                            if match not in seen_matches:
-                                match_ids.append(match)
+                        add_player_match_history(puuid, match_ids, seen_players, 
+                            seen_matches, api_key)
                 
-                logging.info("Added %d new matches to queue", len(match_ids) - queue_length)
+                lock.release()
 
-        except requests.HTTPError as error:
+                logging.info("Added %d new matches to queue", len(match_ids))
+
+        except requests.HTTPError as ex:
+            if lock.locked():
+                lock.release()
+            
+            traceback.print_exception(type(ex), ex, ex.__traceback__)
             logging.error("Received HTTPError, shutting down")
             exit(1)
         
         except Exception as ex:
+            if lock.locked():
+                lock.release()
+            
             traceback.print_exception(type(ex), ex, ex.__traceback__)
-            logging.error("Caught a %s while fetching data, shutting down", ex.__class__.__qualname__)
+            logging.error("Caught a %s while fetching data, shutting down", 
+                ex.__class__.__qualname__)
             exit(1)
 
 
 def main():
+    logging.getLogger().setLevel(logging.INFO)
+    logging.basicConfig(
+        format="[%(asctime)s][%(levelname)s][tid %(thread)d] %(message)s", 
+        datefmt="%H:%M:%S")
+
     maybe_init_db()
 
     keys = get_keys_from_file("keys.txt");
-    match_ids = deque()
     seen_players = set()
     seen_matches = set()
+    lock = threading.Lock()
 
     if len(keys) == 0:
         logging.error("Could not find any keys!")
         exit(1);
-
-    init_seed_data("badgary", match_ids, seen_players, seen_matches, keys[0])
     
     threads = []
+    players = ["badgary"]
+    assert len(players) == len(keys)
 
-    for key in keys:
-        thread = threading.Thread(target=listen_and_commit, args=(match_ids, seen_players, seen_matches, key))
+    for key, player in zip(keys, players):
+        thread = threading.Thread(target=listen_and_commit, 
+            args=(player, seen_players, seen_matches, lock, key))
+        
         threads.append(thread)
         logging.info("Starting thread for key %s", key)
         thread.start()
