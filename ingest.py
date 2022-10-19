@@ -1,11 +1,13 @@
-import requests
+import collections
 import logging
 import os
 import sqlite3
 import threading
 import time
 import traceback
-from collections import deque
+
+import requests
+
 
 CHAMPION_DATA_URL = "https://ddragon.leagueoflegends.com/cdn/12.19.1/data/en_US/champion.json"
 DELAY = 120 / 100 # Limit is 100 requests every 2 minutes, or 20 requests in 1 
@@ -72,11 +74,16 @@ def get_keys_from_file(file_name):
     """
     Returns a list of all Riot API keys from a text file.
     """
+
     with open(file_name) as f:
         return [key.strip() for key in f.readlines() if key[:5] == "RGAPI"]
 
 
 def delay(func):
+    """
+    Decorator that pauses for `DELAY` seconds after `func` is executed. This is
+    used to avoid being ratelimited by the RG API.
+    """
 
     def inner(*args, **kwargs):
         result = func(*args, **kwargs)
@@ -88,6 +95,13 @@ def delay(func):
 
 @delay
 def get_player_info_by_summoner_name(summoner_name, api_key):
+    """
+    Returns a player's account information given a summoner name.
+    
+    Reference: 
+    https://developer.riotgames.com/apis#summoner-v4/GET_getBySummonerName
+    """
+
     url = "https://na1.api.riotgames.com"
     r = requests.get(f"{url}/lol/summoner/v4/summoners/by-name/{summoner_name}?api_key={api_key}")
     r.raise_for_status()
@@ -96,6 +110,13 @@ def get_player_info_by_summoner_name(summoner_name, api_key):
 
 @delay
 def get_matches_by_puuid(puuid, api_key):
+    """
+    Returns a player's most recent 100 matches given the player's PUUID.
+
+    Reference:
+    https://developer.riotgames.com/apis#match-v5/GET_getMatchIdsByPUUID
+    """
+
     url = "https://americas.api.riotgames.com"
     r = requests.get(f"{url}/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=100&api_key={api_key}")
     r.raise_for_status()
@@ -104,6 +125,13 @@ def get_matches_by_puuid(puuid, api_key):
 
 @delay
 def get_match_by_match_id(match_id, api_key):
+    """
+    Returns detailed information about a match given a match ID.
+
+    Reference:
+    https://developer.riotgames.com/apis#match-v5/GET_getMatch
+    """
+
     url = "https://americas.api.riotgames.com"
     r = requests.get(f"{url}/lol/match/v5/matches/{match_id}?api_key={api_key}")
     r.raise_for_status()
@@ -148,7 +176,7 @@ def get_champion_data():
 
 def maybe_init_db(db_name="league.db"):
     """
-    Initializes the database if it does not exist and returns the connection.
+    Initializes the database if it does not exist.
     """
 
     if not os.path.exists(db_name):
@@ -222,7 +250,8 @@ def maybe_init_db(db_name="league.db"):
 
             for champ_data in get_champion_data():
                 # values in champ_data in alphabetical order
-                values = [champ_data[name] for name in sorted(list(champ_data.keys()))]
+                values = [champ_data[name] 
+                    for name in sorted(list(champ_data.keys()))]
 
                 conn.execute(
                     f"""
@@ -238,7 +267,8 @@ def maybe_init_db(db_name="league.db"):
                 elif field_type == str:
                     fields.append(f"{field_name} TEXT")
                 else:
-                    logging.error("Unknown type '%s' for field '%s'", str(field_type), field_name)
+                    logging.error("Unknown type '%s' for field '%s'", 
+                        str(field_type), field_name)
 
             joined_fields = ",\n".join(fields)
             conn.execute(f"""
@@ -253,7 +283,8 @@ def maybe_init_db(db_name="league.db"):
 
         except Exception as ex:
             traceback.print_exception(type(ex), ex, ex.__traceback__)
-            logging.error("Caught a %s while initializing database, aborting", ex.__class__.__qualname__)
+            logging.error("Caught a %s while initializing database, aborting", 
+                ex.__class__.__qualname__)
             os.remove(db_name)
     
     else:
@@ -261,6 +292,11 @@ def maybe_init_db(db_name="league.db"):
 
 
 def process_match(data, conn):
+    """
+    Given match data as retrieved by `get_match_by_id()`, extracts relevant data
+    fields and commits them to the database using `conn` (a sqlite3 connection).
+    """
+
     now = time.time()
 
     info = data["info"]
@@ -294,11 +330,14 @@ def process_match(data, conn):
     logging.debug("Processed match data for %s in %f seconds", meta["matchId"], time.time() - now)
 
 
-def add_player_match_history(puuid, match_ids, seen_players, seen_matches, api_key):
+def add_player_match_history(puuid, match_ids, seen_players, seen_matches, 
+                             api_key):
     """
     Given `seed_player` (a PUUID), gets the most recent 100 matches played by
-    the player, adds the player to `seed_player`
+    the player, adds the player to `seen_players`, and queues their matches in
+    `match_ids`.
     """
+
     logging.info("Adding match history for PUUID %s", puuid)
 
     seen_players.add(puuid)
@@ -310,7 +349,6 @@ def add_player_match_history(puuid, match_ids, seen_players, seen_matches, api_k
 
 
 def listen_and_commit(seed_player, seen_players, seen_matches, lock, api_key):
-
     """
     Per-thread method that performs a breadth-first search over the player
     graph. `seen_players` consists of players whose match history has already
@@ -322,11 +360,12 @@ def listen_and_commit(seed_player, seen_players, seen_matches, lock, api_key):
     """
 
     conn = sqlite3.connect("league.db")
-    match_ids = deque()
+    match_ids = collections.deque()
     seed_puuid = get_player_info_by_summoner_name(seed_player, api_key)["puuid"]
 
     lock.acquire()
-    add_player_match_history(seed_puuid, match_ids, seen_players, seen_matches, api_key);
+    add_player_match_history(seed_puuid, match_ids, seen_players, seen_matches, 
+        api_key);
     lock.release()
 
     while True:
@@ -336,6 +375,7 @@ def listen_and_commit(seed_player, seen_players, seen_matches, lock, api_key):
             # TODO: I'm pretty sure this being necessary is the result of a bug.
             lock.acquire()
             if match in seen_matches:
+                lock.release()
                 continue
 
             seen_matches.add(match)
