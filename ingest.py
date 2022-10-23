@@ -28,63 +28,6 @@ CHAMPION_DATA_URL = "https://ddragon.leagueoflegends.com/cdn/12.19.1/data/en_US/
 DELAY = 120 / 100 # Limit is 100 requests every 2 minutes, or 20 requests in 1 
                   # second
 
-MATCH_FIELDS = {
-    "gameVersion": str,
-    "matchId": str,
-    "gameCreation": int,
-    "gameDuration": int,
-    "gameId": int,
-    # "winner": int
-}
-
-
-PARTICIPANT_FIELDS = {
-    # "matchId": str
-    "assists": str,
-    "baronKills": int,
-    "championId": int,
-    "damageDealtToBuildings": int,
-    "damageDealtToObjectives": int,
-    "damageDealtToTurrets": int,
-    "damageSelfMitigated": int,
-    "deaths": int,
-    "detectorWardsPlaced": int,
-    "dragonKills": int,
-    "goldEarned": int,
-    "goldSpent": int,
-    "kills": int,
-    "magicDamageDealt": int,
-    "magicDamageDealtToChampions": int,
-    "magicDamageTaken": int,
-    "neutralMinionsKilled": int,
-    "physicalDamageDealt": int,
-    "physicalDamageDealtToChampions": int,
-    "physicalDamageTaken": int,
-    "puuid": str,
-    "sightWardsBoughtInGame": int,
-    "teamId": int,
-    "teamPosition": str,
-    "timeCCingOthers": int,
-    "totalDamageDealt": int,
-    "totalDamageDealtToChampions": int,
-    "totalDamageShieldedOnTeammates": int,
-    "totalDamageTaken": int,
-    "totalHeal": int,
-    "totalHealsOnTeammates": int,
-    "totalMinionsKilled": int,
-    "totalTimeCCDealt": int,
-    "trueDamageDealt": int,
-    "trueDamageDealtToChampions": int,
-    "trueDamageTaken": int,
-    "turretKills": int,
-    "turretTakedowns": int,
-    "visionScore": int,
-    "visionWardsBoughtInGame": int,
-    "wardsKilled": int,
-    "wardsPlaced": int,
-}
-
-
 def get_keys_from_file(file_name):
     """
     Returns a list of all Riot API keys from a text file.
@@ -189,7 +132,7 @@ def get_champion_data():
     return result
 
 
-def maybe_init_db(db_name="league.db"):
+def maybe_init_db_from_schema(db_name="league.db", schema="schema.sql"):
     """
     Initializes the database if it does not exist.
     """
@@ -200,70 +143,10 @@ def maybe_init_db(db_name="league.db"):
     try:
         logging.info("%s does not exist, initializing schema", db_name)
         conn = sqlite3.connect(db_name)
-        
-        # Create tables.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS Matches (
-                matchId TEXT PRIMARY KEY,
-                gameVersion TEXT,
-                gameCreation INTEGER,
-                gameDuration INTEGER,
-                gameId INTEGER,
-                winner INTEGER
-            )
-            """
-        )
 
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS SeenMatches (
-                matchId TEXT PRIMARY KEY
-            )
-            """
-        )
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS SeenPlayers (
-                puuid TEXT PRIMARY KEY
-            )
-            """
-        )
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS Champions (
-                armor INTEGER,
-                armorperlevel REAL,
-                attack INTEGER,
-                attackdamage INTEGER,
-                attackdamageperlevel REAL,
-                attackrange INTEGER,
-                attackspeed REAL,
-                attackspeedperlevel REAL,
-                championId INTEGER PRIMARY KEY,
-                championName TEXT,
-                crit INTEGER,
-                critperlevel INTEGER,
-                defense INTEGER,
-                difficulty INTEGER,
-                hp INTEGER,
-                hpperlevel INTEGER,
-                hpregen REAL,
-                hpregenperlevel REAL,
-                magic INTEGER,
-                movespeed INTEGER,
-                mp INTEGER,
-                mpperlevel INTEGER,
-                mpregen INTEGER,
-                mpregenperlevel REAL,
-                spellblock INTEGER,
-                spellblockperlevel REAL,
-                tags TEXT
-            )
-            """
-        )
+        with open(schema) as f:
+            lines = f.read()
+            conn.executescript(lines)
 
         for champ_data in get_champion_data():
             # values in champ_data in alphabetical order
@@ -278,25 +161,6 @@ def maybe_init_db(db_name="league.db"):
                 """,
                 tuple(values)
             )
-
-        fields = []
-        for field_name, field_type in PARTICIPANT_FIELDS.items():
-            if field_type == int:
-                fields.append(f"{field_name} INTEGER")
-            elif field_type == str:
-                fields.append(f"{field_name} TEXT")
-            else:
-                logging.error("Unknown type '%s' for field '%s'", 
-                    str(field_type), field_name)
-
-        joined_fields = ",\n".join(fields)
-        conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS Participants (
-                {joined_fields},
-                matchId TEXT
-            )
-            """
-        )
 
         conn.commit()
 
@@ -329,18 +193,28 @@ def process_match(data, conn):
         [info["gameVersion"], meta["matchId"], info["gameCreation"], 
         info["gameDuration"], info["gameId"], winner])
 
-    # Now insert information about each of the participants:
+    # This returns a list of tuples that looks something like this:
+    # [(0, 'assists', 'INTEGER', 0, None, 0), 
+    #  (1, 'baronKills', 'INTEGER', 0, None, 0), 
+    #  (2, 'championId', 'INTEGER', 0, None, 0), 
+    #  ... ]
+    # NOTE: Hacky! But allows us to use the schema to *mostly* determine which
+    # fields we want to grab from the JSON.
+    fields = [field for field in 
+        conn.execute("PRAGMA table_info('Participants')").fetchall()
+        if field [1] != "matchId"]
+
     for participant in info["participants"]:
         values = []
 
-        for name in sorted(list(PARTICIPANT_FIELDS.keys())):
-            values.append(participant[name])
+        for field in sorted(fields, key=lambda x: x[1]):
+            values.append(participant[field[1]])
         values.append(meta["matchId"])
 
         conn.execute(
             f"""
             INSERT INTO Participants VALUES({
-                ",".join(["?"] * (len(PARTICIPANT_FIELDS) + 1))
+                ",".join(["?"] * (len(fields) + 1))
             })
             """,
             values)
@@ -491,7 +365,7 @@ def main():
         format="[%(asctime)s][%(levelname)s][tid %(thread)d] %(message)s", 
         datefmt="%H:%M:%S")
 
-    maybe_init_db()
+    maybe_init_db_from_schema()
 
     keys = get_keys_from_file("keys.txt");
     seen_players = set()
