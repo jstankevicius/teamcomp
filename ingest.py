@@ -4,9 +4,9 @@ adding it to the database.
 
 This module utilizes multiple threads of execution (concurrent, not parallel) to
 maximize request throughput. It will instantiate a separate thread for each API
-key. Each thread performs a breadth-first search over the player graph by adding 
+key. Each thread performs a breadth-first search over the player graph by adding
 each player's past match IDs to a queue. Only matched games on Summoner's Rift
-are considered, and the rest are skipped. 
+are considered, and the rest are skipped.
 
 An important goal of this module is to continue running each thread for as long
 as possible. Because of this, many exceptions, like KeyErrors, IndexErrors, and
@@ -26,7 +26,7 @@ import requests
 
 
 CHAMPION_DATA_URL = "https://ddragon.leagueoflegends.com/cdn/12.19.1/data/en_US/champion.json"
-DELAY = 120 / 100 # Limit is 100 requests every 2 minutes, or 20 requests in 1 
+DELAY = 120 / 100 # Limit is 100 requests every 2 minutes, or 20 requests in 1
                   # second
 REQUEST_RETRY_COUNT = 5 # How many times we will re-send a request before giving
                         # up
@@ -36,8 +36,8 @@ def get_keys_from_file(file_name):
     Returns a list of all Riot API keys from a text file.
     """
 
-    with open(file_name) as f:
-        return [key.strip() for key in f.readlines() if key[:5] == "RGAPI"]
+    with open(file_name, encoding="utf-8") as file:
+        return [key.strip() for key in file.readlines() if key[:5] == "RGAPI"]
 
 
 def delay(func):
@@ -50,39 +50,39 @@ def delay(func):
         result = func(*args, **kwargs)
         time.sleep(DELAY)
         return result
-    
+
     return inner
 
 
 def get_with_retry(url):
     retry_attempts = 0
-    r = requests.get(url)
+    req = requests.get(url)
 
-    while r.status_code in (429, 500, 503) and retry_attempts < REQUEST_RETRY_COUNT:
+    while req.status_code in (429, 500, 503) and retry_attempts < REQUEST_RETRY_COUNT:
         logging.warning("Received status code %d for %s, retrying",
-            r.status_code, url)
+            req.status_code, url)
         time.sleep(5)
-        r = requests.get(url)
+        req = requests.get(url)
         retry_attempts += 1
 
-    return r
+    return req
 
 @delay
 def get_player_info_by_summoner_name(summoner_name, api_key):
     """
     Returns a player's account information given a summoner name.
-    
-    Reference: 
+
+    Reference:
     https://developer.riotgames.com/apis#summoner-v4/GET_getBySummonerName
     """
 
     url = "https://na1.api.riotgames.com"
     endpoint = "lol/summoner/v4/summoners/by-name"
     full_url = f"{url}/{endpoint}/{summoner_name}?api_key={api_key}"
-    r = get_with_retry(full_url)
-    r.raise_for_status()
+    req = get_with_retry(full_url)
+    req.raise_for_status()
 
-    return r.json()
+    return req.json()
 
 
 @delay
@@ -96,10 +96,10 @@ def get_matches_by_puuid(puuid, api_key):
 
     url = "https://americas.api.riotgames.com"
     endpoint = "lol/match/v5/matches/by-puuid"
-    r = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=100&api_key={api_key}")
-    r.raise_for_status()
+    req = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=100&api_key={api_key}")
+    req.raise_for_status()
 
-    return r.json()
+    return req.json()
 
 
 @delay
@@ -113,10 +113,10 @@ def get_match_by_match_id(match_id, api_key):
 
     url = "https://americas.api.riotgames.com"
     endpoint = "lol/match/v5/matches"
-    r = get_with_retry(f"{url}/{endpoint}/{match_id}?api_key={api_key}")
-    r.raise_for_status()
+    req = get_with_retry(f"{url}/{endpoint}/{match_id}?api_key={api_key}")
+    req.raise_for_status()
 
-    return r.json()
+    return req.json()
 
 @delay
 def get_champion_mastery(encrypted_summoner_id, api_key):
@@ -130,25 +130,25 @@ def get_champion_mastery(encrypted_summoner_id, api_key):
 
     url = "https://na1.api.riotgames.com"
     endpoint = "lol/champion-mastery/v4/champion-masteries/by-summoner"
-    r = get_with_retry(f"{url}/{endpoint}/{encrypted_summoner_id}?api_key={api_key}")
-    r.raise_for_status()
+    req = get_with_retry(f"{url}/{endpoint}/{encrypted_summoner_id}?api_key={api_key}")
+    req.raise_for_status()
 
-    return r.json()
+    return req.json()
 
 
 def get_champion_data():
     """
-    Gets relevant data about all current champions in League of Legends from a 
+    Gets relevant data about all current champions in League of Legends from a
     Riot endpoint and returns the result as a list of dictionaries, one dict per
     champion.
     """
-    
-    r = requests.get(CHAMPION_DATA_URL)
+
+    req = requests.get(CHAMPION_DATA_URL)
     result = []
     tags = set()
 
     # Collect all tags:
-    for data in r.json()["data"].values():
+    for data in req.json()["data"].values():
         for tag in data["tags"]:
             tags.add(tag)
 
@@ -184,13 +184,13 @@ def maybe_init_db_from_schema(db_name="league.db", schema="schema.sql"):
         logging.info("%s does not exist, initializing schema", db_name)
         conn = sqlite3.connect(db_name)
 
-        with open(schema) as f:
-            lines = f.read()
+        with open(schema, encoding="utf-8") as file:
+            lines = file.read()
             conn.executescript(lines)
 
         for champ_data in get_champion_data():
             # values in champ_data in alphabetical order
-            values = [champ_data[name] 
+            values = [champ_data[name]
                 for name in sorted(list(champ_data.keys()))]
 
             conn.execute(
@@ -206,7 +206,7 @@ def maybe_init_db_from_schema(db_name="league.db", schema="schema.sql"):
 
     except Exception as ex:
         traceback.print_exception(type(ex), ex, ex.__traceback__)
-        logging.error("Caught a %s while initializing database, aborting", 
+        logging.error("Caught a %s while initializing database, aborting",
             ex.__class__.__qualname__)
         os.remove(db_name)
 
@@ -226,21 +226,21 @@ def process_match(data, conn, seen_masteries, api_key):
     # Insert information about the match:
     conn.execute(
         """
-        INSERT INTO Matches 
-        (gameVersion, matchId, gameCreation, gameDuration, gameId, winner) 
+        INSERT INTO Matches
+        (gameVersion, matchId, gameCreation, gameDuration, gameId, winner)
         VALUES(?, ?, ?, ?, ?, ?)
-        """, 
-        [info["gameVersion"], meta["matchId"], info["gameCreation"], 
+        """,
+        [info["gameVersion"], meta["matchId"], info["gameCreation"],
         info["gameDuration"], info["gameId"], winner])
 
     # This returns a list of tuples that looks something like this:
-    # [(0, 'assists', 'INTEGER', 0, None, 0), 
-    #  (1, 'baronKills', 'INTEGER', 0, None, 0), 
-    #  (2, 'championId', 'INTEGER', 0, None, 0), 
+    # [(0, 'assists', 'INTEGER', 0, None, 0),
+    #  (1, 'baronKills', 'INTEGER', 0, None, 0),
+    #  (2, 'championId', 'INTEGER', 0, None, 0),
     #  ... ]
     # NOTE: Hacky! But allows us to use the schema to *mostly* determine which
     # fields we want to grab from the JSON.
-    fields = [field for field in 
+    fields = [field for field in
         conn.execute("PRAGMA table_info('Participants')").fetchall()
         if field [1] != "matchId"]
 
@@ -262,21 +262,21 @@ def process_match(data, conn, seen_masteries, api_key):
         # Get each participant's champion mastery info (if we don't have it
         # already)
         if participant["summonerId"] not in seen_masteries:
-            mastery_list = get_champion_mastery(participant["summonerId"], 
+            mastery_list = get_champion_mastery(participant["summonerId"],
                 api_key)
-            
+
             for mastery in mastery_list:
                 conn.execute("INSERT INTO ChampionMastery VALUES(?,?,?,?)",
-                    (mastery["championId"], mastery["championLevel"], 
+                    (mastery["championId"], mastery["championLevel"],
                     mastery["championPoints"], mastery["summonerId"]))
                 seen_masteries.add(participant["summonerId"])
-            
+
     conn.commit()
-    logging.debug("Processed match data for %s in %f seconds", meta["matchId"], 
+    logging.debug("Processed match data for %s in %f seconds", meta["matchId"],
         time.time() - now)
 
 
-def add_player_match_history(conn, puuid, match_ids, seen_players, seen_matches, 
+def add_player_match_history(conn, puuid, match_ids, seen_players, seen_matches,
                              api_key):
     """
     Given `seed_player` (a PUUID), gets the most recent 100 matches played by
@@ -312,25 +312,19 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
     match_ids = collections.deque()
 
     lock.acquire()
-    add_player_match_history(conn, seed_puuid, match_ids, seen_players, 
-        seen_matches, api_key);
+    add_player_match_history(conn, seed_puuid, match_ids, seen_players,
+        seen_matches, api_key)
     lock.release()
 
     while True:
 
         try:
             match = match_ids.popleft()
-            
-            # TODO: I'm pretty sure this being necessary is the result of a bug.
+
+            # NOTE: I'm pretty sure this being necessary is the result of a bug.
             lock.acquire()
             if match in seen_matches:
                 lock.release()
-
-                # TODO: This can cause us to skip the `finally` branch when 
-                # we need to repopulate the queue. If len(match_ids) == 0 but
-                # we go here, the queue will be empty the next time around. For
-                # now, we'll catch an IndexError so we can repopulate the queue
-                # in this scenario.
                 continue
 
             seen_matches.add(match)
@@ -343,10 +337,10 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
                 logging.info("Processed %d matches", len(seen_matches))
             lock.release()
 
-            if not (data["info"]["gameMode"] == "CLASSIC" 
+            if not (data["info"]["gameMode"] == "CLASSIC"
                 and data["info"]["gameType"] == "MATCHED_GAME"
                 and all([p["summonerId"] != "BOT" for p in data["info"]["participants"]])):
-                logging.info("Match %s gamemode: %s; gametype: %s, skipping", 
+                logging.info("Match %s gamemode: %s; gametype: %s, skipping",
                     match, data["info"]["gameMode"], data["info"]["gameType"])
             else:
                 last_valid_match = data
@@ -367,17 +361,17 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
 
         except KeyError as err:
             # KeyErrors can (generally) be ignored. If the data does not fit the
-            # format we expect it to fit (i.e. a key is missing), we won't 
+            # format we expect it to fit (i.e. a key is missing), we won't
             # bother processing it and will skip.
             traceback.print_exception(type(err), err, err.__traceback__)
             logging.warning("Encountered a KeyError while parsing data, skipping")
 
         finally:
-            # Get list of all players in the match and add their recent match 
+            # Get list of all players in the match and add their recent match
             # IDs to the queue.
             if lock.locked():
                 lock.release()
-            
+
             if len(match_ids) == 0:
                 lock.acquire()
                 logging.info("Match queue is empty, enqueuing more")
@@ -390,9 +384,9 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
                 data = last_valid_match
                 for puuid in data["metadata"]["participants"]:
                     if puuid not in seen_players:
-                        add_player_match_history(conn, puuid, match_ids, 
+                        add_player_match_history(conn, puuid, match_ids,
                             seen_players, seen_matches, api_key)
-                
+
                 logging.info("Added %d new matches to queue", len(match_ids))
                 lock.release()
 
@@ -400,23 +394,23 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
 def main():
     logging.getLogger().setLevel(logging.INFO)
     logging.basicConfig(
-        format="[%(asctime)s][%(levelname)s][tid %(thread)d] %(message)s", 
+        format="[%(asctime)s][%(levelname)s][tid %(thread)d] %(message)s",
         datefmt="%H:%M:%S")
 
     maybe_init_db_from_schema()
 
-    keys = get_keys_from_file("keys.txt");
+    keys = get_keys_from_file("keys.txt")
 
     # Re-populate seen_players, seen_matches, and seen_masteries if we can
     conn = sqlite3.connect("league.db")
 
-    seen_players = set([p[0] 
+    seen_players = set([p[0]
         for p in conn.execute("SELECT puuid from SeenPlayers;").fetchall()])
-    
+
     seen_matches = set([m[0]
         for m in conn.execute("SELECT matchId FROM Matches;").fetchall()])
-    
-    seen_masteries = set(m[0] 
+
+    seen_masteries = set(m[0]
         for m in conn.execute("SELECT summonerId from ChampionMastery;").fetchall())
 
     logging.info("Seen players (match history): %d", len(seen_players))
@@ -427,8 +421,8 @@ def main():
 
     if len(keys) == 0:
         logging.error("Could not find any keys!")
-        exit(1);
-    
+        exit(1)
+
     threads = []
 
     # NOTE: Edit this list! There should be one player for each key in keys.txt.
@@ -437,7 +431,7 @@ def main():
     # If this isn't our first time populating this DB, pick a player at random
     # to be the seed player.
     if len(seen_matches) > 0:
-        pool = [p[0] for p in 
+        pool = [p[0] for p in
             conn.execute("SELECT DISTINCT puuid from Participants;").fetchall()]
 
         players = random.sample(pool, len(keys))
@@ -447,16 +441,16 @@ def main():
     assert len(players) == len(keys)
 
     for key, player in zip(keys, players):
-        thread = threading.Thread(target=listen_and_commit, 
-            args=(player, seen_players, seen_matches, seen_masteries, lock, 
+        thread = threading.Thread(target=listen_and_commit,
+            args=(player, seen_players, seen_matches, seen_masteries, lock,
                   key))
-        
+
         threads.append(thread)
         logging.info("Starting thread for key %s", key)
         thread.start()
 
-    for t in threads:
-        t.join()
+    for thread in threads:
+        thread.join()
 
 
 if __name__ == "__main__":
