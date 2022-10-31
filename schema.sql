@@ -8,11 +8,6 @@ CREATE TABLE IF NOT EXISTS Matches (
 );
 
 
-CREATE TABLE IF NOT EXISTS SeenMatches (
-    matchId TEXT PRIMARY KEY
-);
-
-
 CREATE TABLE IF NOT EXISTS SeenPlayers (
     puuid TEXT PRIMARY KEY
 );
@@ -48,6 +43,13 @@ CREATE TABLE IF NOT EXISTS Champions (
     tags TEXT
 );
 
+CREATE TABLE IF NOT EXISTS ChampionMastery (
+    championId INTEGER,
+    championLevel INTEGER,
+    championPoints INTEGER,
+    summonerId TEXT
+);
+
 CREATE TABLE IF NOT EXISTS Participants (
     assists INTEGER,
     baronKills INTEGER,
@@ -71,6 +73,8 @@ CREATE TABLE IF NOT EXISTS Participants (
     physicalDamageTaken INTEGER,
     puuid TEXT,
     sightWardsBoughtInGame INTEGER,
+    summonerId TEXT,
+    summonerName TEXT,
     teamId INTEGER,
     teamPosition TEXT,
     timeCCingOthers INTEGER,
