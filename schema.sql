@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS Matches (
 
 
 CREATE TABLE IF NOT EXISTS SeenPlayers (
-    puuid TEXT PRIMARY KEY
+    summonerName TEXT PRIMARY KEY
 );
 
 
@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS Participants (
     physicalDamageDealt INTEGER,
     physicalDamageDealtToChampions INTEGER,
     physicalDamageTaken INTEGER,
-    puuid TEXT,
     sightWardsBoughtInGame INTEGER,
     summonerId TEXT,
     summonerName TEXT,

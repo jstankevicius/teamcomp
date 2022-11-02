@@ -96,7 +96,7 @@ def get_matches_by_puuid(puuid, api_key):
 
     url = "https://americas.api.riotgames.com"
     endpoint = "lol/match/v5/matches/by-puuid"
-    req = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=100&api_key={api_key}")
+    req = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=20&api_key={api_key}")
     req.raise_for_status()
 
     return req.json()
@@ -232,7 +232,7 @@ def process_match(data, conn, seen_masteries, api_key):
         """,
         [info["gameVersion"], meta["matchId"], info["gameCreation"],
         info["gameDuration"], info["gameId"], winner])
-
+    conn.commit()
     # This returns a list of tuples that looks something like this:
     # [(0, 'assists', 'INTEGER', 0, None, 0),
     #  (1, 'baronKills', 'INTEGER', 0, None, 0),
@@ -258,6 +258,7 @@ def process_match(data, conn, seen_masteries, api_key):
             })
             """,
             values)
+        conn.commit()
 
         # Get each participant's champion mastery info (if we don't have it
         # already)
@@ -271,12 +272,13 @@ def process_match(data, conn, seen_masteries, api_key):
                     mastery["championPoints"], mastery["summonerId"]))
                 seen_masteries.add(participant["summonerId"])
 
-    conn.commit()
+            conn.commit()
+
     logging.debug("Processed match data for %s in %f seconds", meta["matchId"],
         time.time() - now)
 
 
-def add_player_match_history(conn, puuid, match_ids, seen_players, seen_matches,
+def add_player_match_history(conn, name, match_ids, seen_players, seen_matches,
                              api_key):
     """
     Given `seed_player` (a PUUID), gets the most recent 100 matches played by
@@ -284,10 +286,13 @@ def add_player_match_history(conn, puuid, match_ids, seen_players, seen_matches,
     `match_ids`.
     """
 
-    logging.info("Adding match history for PUUID %s", puuid)
+    logging.info("Adding match history for %s", name)
+    puuid = get_player_info_by_summoner_name(name, api_key)["puuid"]
+    seen_players.add(name)
 
-    seen_players.add(puuid)
-    conn.execute("INSERT INTO SeenPlayers VALUES(?);", [puuid])
+    conn.execute("INSERT INTO SeenPlayers VALUES(?);", [name])
+    conn.commit()
+
     match_data = get_matches_by_puuid(puuid, api_key)
 
     for match in match_data:
@@ -295,7 +300,7 @@ def add_player_match_history(conn, puuid, match_ids, seen_players, seen_matches,
             match_ids.append(match)
 
 
-def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
+def listen_and_commit(seed_name, seen_players, seen_matches, seen_masteries,
                       lock, api_key):
     """
     Per-thread method that performs a breadth-first search over the player
@@ -308,11 +313,11 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
     """
     last_valid_match = None
 
-    conn = sqlite3.connect("league.db")
+    conn = sqlite3.connect("league.db", timeout=60)
     match_ids = collections.deque()
 
     lock.acquire()
-    add_player_match_history(conn, seed_puuid, match_ids, seen_players,
+    add_player_match_history(conn, seed_name, match_ids, seen_players,
         seen_matches, api_key)
     lock.release()
 
@@ -347,6 +352,7 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
                 process_match(data, conn, seen_masteries, api_key)
 
         except requests.HTTPError as err:
+            conn.close()
             traceback.print_exception(type(err), err, err.__traceback__)
             exit(1)
 
@@ -356,6 +362,7 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
             if len(match_ids) == 0:
                 logging.warning("Popped from an empty queue. Continuing")
             else:
+                conn.close()
                 logging.error("Received an IndexError, but don't know why. Shutting down")
                 exit(1)
 
@@ -369,9 +376,7 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
         finally:
             # Get list of all players in the match and add their recent match
             # IDs to the queue.
-            if lock.locked():
-                lock.release()
-
+            conn.commit()
             if len(match_ids) == 0:
                 lock.acquire()
                 logging.info("Match queue is empty, enqueuing more")
@@ -382,9 +387,10 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
                 # in `last_valid_match`, so that when we need to get a valid
                 # player list we have one available.
                 data = last_valid_match
-                for puuid in data["metadata"]["participants"]:
-                    if puuid not in seen_players:
-                        add_player_match_history(conn, puuid, match_ids,
+                for participant in data["info"]["participants"]:
+                    name = participant["summonerName"]
+                    if name not in seen_players:
+                        add_player_match_history(conn, name, match_ids,
                             seen_players, seen_matches, api_key)
 
                 logging.info("Added %d new matches to queue", len(match_ids))
@@ -392,10 +398,12 @@ def listen_and_commit(seed_puuid, seen_players, seen_matches, seen_masteries,
 
 
 def main():
-    logging.getLogger().setLevel(logging.INFO)
     logging.basicConfig(
         format="[%(asctime)s][%(levelname)s][tid %(thread)d] %(message)s",
-        datefmt="%H:%M:%S")
+        datefmt="%H:%M:%S",
+        #filename="ingest.log",
+        filemode="w",
+        level=logging.INFO)
 
     maybe_init_db_from_schema()
 
@@ -405,7 +413,7 @@ def main():
     conn = sqlite3.connect("league.db")
 
     seen_players = set([p[0]
-        for p in conn.execute("SELECT puuid from SeenPlayers;").fetchall()])
+        for p in conn.execute("SELECT summonerName from SeenPlayers;").fetchall()])
 
     seen_matches = set([m[0]
         for m in conn.execute("SELECT matchId FROM Matches;").fetchall()])
@@ -426,7 +434,13 @@ def main():
     threads = []
 
     # NOTE: Edit this list! There should be one player for each key in keys.txt.
-    players = ["IvU_VEsob1u1AsUD9AJqwY6hyrjIgg7LuVmnV_3NCgR6056O0ywdJTKpa3yMumG7A6U6zbxeWewBYQ"]
+    players = [
+        "Murik",
+        "TwTv Secillia",
+        "BelliB0lt",
+        "i play sova alot",
+        "Yuumbee"
+    ]
 
     # If this isn't our first time populating this DB, pick a player at random
     # to be the seed player.
