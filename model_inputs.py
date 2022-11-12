@@ -4,20 +4,23 @@ then passed to model.py.
 
 import numpy as np
 import random
+from db import mock_db_matchinfo_list
 
 
-def mock_model_input():
+
+def mock_model_input(match_info):
     """
     Returns a mock version of the model's input as a numpy array.
     """
 
     model_input = np.zeros(shape=(10, 161, 2))
-
+    
     for player_idx in range(10):
-        champ_idx = random.randint(0, 160)
+        champ_idx = match_info.players[player_idx].champion_id
         model_input[player_idx][champ_idx][0] = 1
 
         for i in range(161):
-            model_input[player_idx][i][1] = random.randint(0, 50000)
+            model_input[player_idx][i][1] = match_info.players[player_idx].masteries[i]
 
     return model_input
+
