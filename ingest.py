@@ -31,6 +31,10 @@ DELAY = 120 / 100 # Limit is 100 requests every 2 minutes, or 20 requests in 1
 REQUEST_RETRY_COUNT = 5 # How many times we will re-send a request before giving
                         # up
 
+class SummonerNotFoundException(Exception):
+    pass
+
+
 def get_keys_from_file(file_name):
     """
     Returns a list of all Riot API keys from a text file.
@@ -40,23 +44,14 @@ def get_keys_from_file(file_name):
         return [key.strip() for key in file.readlines() if key[:5] == "RGAPI"]
 
 
-def delay(func):
-    """
-    Decorator that pauses for `DELAY` seconds after `func` is executed. This is
-    used to avoid being ratelimited by the RG API.
-    """
-
-    def inner(*args, **kwargs):
-        result = func(*args, **kwargs)
-        time.sleep(DELAY)
-        return result
-
-    return inner
-
-
 def get_with_retry(url):
     retry_attempts = 0
     req = requests.get(url)
+    time.sleep(DELAY)
+
+    if req.status_code == 403:
+        logging.error("Request for %s received status code 403, shutting down", url)
+        exit(1)
 
     while req.status_code in (429, 500, 503) and retry_attempts < REQUEST_RETRY_COUNT:
         logging.warning("Received status code %d for %s, retrying",
@@ -67,7 +62,7 @@ def get_with_retry(url):
 
     return req
 
-@delay
+
 def get_player_info_by_summoner_name(summoner_name, api_key):
     """
     Returns a player's account information given a summoner name.
@@ -80,12 +75,15 @@ def get_player_info_by_summoner_name(summoner_name, api_key):
     endpoint = "lol/summoner/v4/summoners/by-name"
     full_url = f"{url}/{endpoint}/{summoner_name}?api_key={api_key}"
     req = get_with_retry(full_url)
+
+    if req.status_code == 404 and "summoner not found" in req.json()["status"]["message"]:
+        raise SummonerNotFoundException(summoner_name);
+
     req.raise_for_status()
 
     return req.json()
 
 
-@delay
 def get_matches_by_puuid(puuid, api_key):
     """
     Returns a player's most recent 100 matches given the player's PUUID.
@@ -96,13 +94,12 @@ def get_matches_by_puuid(puuid, api_key):
 
     url = "https://americas.api.riotgames.com"
     endpoint = "lol/match/v5/matches/by-puuid"
-    req = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=20&api_key={api_key}")
+    req = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=50&api_key={api_key}")
     req.raise_for_status()
 
     return req.json()
 
 
-@delay
 def get_match_by_match_id(match_id, api_key):
     """
     Returns detailed information about a match given a match ID.
@@ -118,7 +115,7 @@ def get_match_by_match_id(match_id, api_key):
 
     return req.json()
 
-@delay
+
 def get_champion_mastery(encrypted_summoner_id, api_key):
     """
     Returns champion mastery information for a summoner given an encrypted
@@ -233,6 +230,7 @@ def process_match(data, conn, seen_masteries, api_key):
         [info["gameVersion"], meta["matchId"], info["gameCreation"],
         info["gameDuration"], info["gameId"], winner])
     conn.commit()
+
     # This returns a list of tuples that looks something like this:
     # [(0, 'assists', 'INTEGER', 0, None, 0),
     #  (1, 'baronKills', 'INTEGER', 0, None, 0),
@@ -262,15 +260,15 @@ def process_match(data, conn, seen_masteries, api_key):
 
         # Get each participant's champion mastery info (if we don't have it
         # already)
-        if participant["summonerId"] not in seen_masteries:
+        if participant["summonerName"] not in seen_masteries:
             mastery_list = get_champion_mastery(participant["summonerId"],
                 api_key)
 
             for mastery in mastery_list:
                 conn.execute("INSERT INTO ChampionMastery VALUES(?,?,?,?)",
                     (mastery["championId"], mastery["championLevel"],
-                    mastery["championPoints"], mastery["summonerId"]))
-                seen_masteries.add(participant["summonerId"])
+                    mastery["championPoints"], participant["summonerName"]))
+            seen_masteries.add(participant["summonerName"])
 
             conn.commit()
 
@@ -285,10 +283,14 @@ def add_player_match_history(conn, name, match_ids, seen_players, seen_matches,
     the player, adds the player to `seen_players`, and queues their matches in
     `match_ids`.
     """
-
     logging.info("Adding match history for %s", name)
-    puuid = get_player_info_by_summoner_name(name, api_key)["puuid"]
     seen_players.add(name)
+
+    try:
+        puuid = get_player_info_by_summoner_name(name, api_key)["puuid"]
+    except SummonerNotFoundException as err:
+        raise err
+
 
     conn.execute("INSERT INTO SeenPlayers VALUES(?);", [name])
     conn.commit()
@@ -333,50 +335,54 @@ def listen_and_commit(seed_name, seen_players, seen_matches, seen_masteries,
                 continue
 
             seen_matches.add(match)
+
+            num_matches = conn.execute("SELECT COUNT(*) FROM Matches;").fetchone()[0]
+
+            if len(seen_matches) % 100 == 0:
+                logging.info("Processed %d matches (%d committed)",
+                    len(seen_matches), num_matches)
+
             lock.release()
 
             data = get_match_by_match_id(match, api_key)
 
-            lock.acquire()
-            if len(seen_matches) % 10 == 0:
-                logging.info("Processed %d matches", len(seen_matches))
-            lock.release()
-
             if not (data["info"]["gameMode"] == "CLASSIC"
                 and data["info"]["gameType"] == "MATCHED_GAME"
                 and all([p["summonerId"] != "BOT" for p in data["info"]["participants"]])):
-                logging.info("Match %s gamemode: %s; gametype: %s, skipping",
+                logging.debug("Match %s gamemode: %s; gametype: %s, skipping",
                     match, data["info"]["gameMode"], data["info"]["gameType"])
             else:
-                last_valid_match = data
+                last_valid_match = data if data else last_valid_match
                 process_match(data, conn, seen_masteries, api_key)
 
         except requests.HTTPError as err:
-            conn.close()
             traceback.print_exception(type(err), err, err.__traceback__)
-            exit(1)
+            logging.error("Received some other HTTPError: %s", str(err))
+
+        except requests.ConnectionError as err:
+            traceback.print_exception(type(err), err, err.__traceback__)
+            logging.error("Received a ConnectionError: %s", str(err))
 
         except IndexError as err:
             traceback.print_exception(type(err), err, err.__traceback__)
 
             if len(match_ids) == 0:
-                logging.warning("Popped from an empty queue. Continuing")
-            else:
-                conn.close()
-                logging.error("Received an IndexError, but don't know why. Shutting down")
-                exit(1)
+                logging.error("Popped from an empty queue. Continuing")
 
         except KeyError as err:
             # KeyErrors can (generally) be ignored. If the data does not fit the
             # format we expect it to fit (i.e. a key is missing), we won't
             # bother processing it and will skip.
             traceback.print_exception(type(err), err, err.__traceback__)
-            logging.warning("Encountered a KeyError while parsing data, skipping")
+            logging.error("KeyError: %s", str(err))
+
+        except Exception as err:
+            traceback.print_exception(type(err), err, err.__traceback__)
+            logging.error("Some other exception: %s", str(err))
 
         finally:
             # Get list of all players in the match and add their recent match
             # IDs to the queue.
-            conn.commit()
             if len(match_ids) == 0:
                 lock.acquire()
                 logging.info("Match queue is empty, enqueuing more")
@@ -390,8 +396,12 @@ def listen_and_commit(seed_name, seen_players, seen_matches, seen_masteries,
                 for participant in data["info"]["participants"]:
                     name = participant["summonerName"]
                     if name not in seen_players:
-                        add_player_match_history(conn, name, match_ids,
-                            seen_players, seen_matches, api_key)
+                        try:
+                            add_player_match_history(conn, name, match_ids,
+                                seen_players, seen_matches, api_key)
+                        except SummonerNotFoundException as err:
+                            traceback.print_exception(type(err), err, err.__traceback__)
+                            logging.error("Could not find summoner %s, skipping", str(err))
 
                 logging.info("Added %d new matches to queue", len(match_ids))
                 lock.release()
@@ -401,8 +411,8 @@ def main():
     logging.basicConfig(
         format="[%(asctime)s][%(levelname)s][tid %(thread)d] %(message)s",
         datefmt="%H:%M:%S",
-        #filename="ingest.log",
-        filemode="w",
+        filename="ingest.log",
+        filemode="w+",
         level=logging.INFO)
 
     maybe_init_db_from_schema()
@@ -419,7 +429,7 @@ def main():
         for m in conn.execute("SELECT matchId FROM Matches;").fetchall()])
 
     seen_masteries = set(m[0]
-        for m in conn.execute("SELECT summonerId from ChampionMastery;").fetchall())
+        for m in conn.execute("SELECT DISTINCT summonerName from ChampionMastery;").fetchall())
 
     logging.info("Seen players (match history): %d", len(seen_players))
     logging.info("Seen matches: %d", len(seen_matches))
@@ -446,7 +456,7 @@ def main():
     # to be the seed player.
     if len(seen_matches) > 0:
         pool = [p[0] for p in
-            conn.execute("SELECT DISTINCT puuid from Participants;").fetchall()]
+            conn.execute("SELECT DISTINCT summonerName from Participants;").fetchall()]
 
         players = random.sample(pool, len(keys))
         while any([p in seen_players for p in players]):
@@ -468,4 +478,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+            time.sleep(30)
+        except Exception as err:
+            logging.error("Exception escaped main loop: %s", str(err))
+            logging.error("RESTARTING")
+

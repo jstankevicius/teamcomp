@@ -3,7 +3,6 @@ list of MatchInfo objects to model_inputs.py, which will then transform the list
 into a numpy array.
 """
 import numpy as np
-import random
 
 # TEMPLATES
 class MatchInfo:
@@ -20,23 +19,23 @@ class PlayerInfo:
         self.masteries = np.zeros(161)
 
 
-def mock_db_matchinfo_list(list_len=10):
-    """
-    Returns a mock version of a list of MatchInfo objects.
-    """
+def db_matchinfo_list():
     res = []
+    cnx = sqlite3.connect("league.db")
+    all_matches = cnx.execute("SELECT matchId FROM Matches;").fetchall()
 
-    for _ in range(list_len):
+    for match_id in all_matches:
         m = MatchInfo()
-        m.winner = random.choice([0, 1])
+        m.winner = cnx.execute("SELECT winner FROM Matches WHERE Matches.matchId == ?", [match_id]).fetchone()[0]
+        players = cnx.execute("SELECT summonerName, championID FROM Participants WHERE Participants.matchId == ?", [maych_id]).fetchall()
 
-        for _ in range(10):
+        for player in players:
             p = PlayerInfo()
-
-            # This allows for duplicate champions, so this is not completely
-            # correct input
-            p.champion_id = random.randint(0, 160)
-            p.masteries = np.random.randint(50000, size=161)
+            summoner_name = player[0]
+            champion_id = player[1]
+  
+            p.champion_id = champion_id
+            p.masteries = cnx.execute("SELECT championID, ChampionMastery FROM championPoints WHERE ChampionMastery.summonerName == ?" [summoner_name]).fetchall()
             m.players.append(p)
 
         res.append(m)
