@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS ChampionMastery (
     championId INTEGER,
     championLevel INTEGER,
     championPoints INTEGER,
-    summonerId TEXT
+    summonerName TEXT
 );
 
 CREATE TABLE IF NOT EXISTS Participants (
