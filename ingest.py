@@ -94,7 +94,7 @@ def get_matches_by_puuid(puuid, api_key):
 
     url = "https://americas.api.riotgames.com"
     endpoint = "lol/match/v5/matches/by-puuid"
-    req = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=50&api_key={api_key}")
+    req = get_with_retry(f"{url}/{endpoint}/{puuid}/ids?start=0&count=100&api_key={api_key}")
     req.raise_for_status()
 
     return req.json()

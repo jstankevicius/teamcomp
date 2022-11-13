@@ -97,3 +97,5 @@ CREATE TABLE IF NOT EXISTS Participants (
     matchId TEXT
 );
 
+CREATE INDEX championMasteryIdx ON ChampionMastery(summonerName, championId);
+CREATE INDEX participantIdx ON Participants(summonerName, matchId);
