@@ -4,32 +4,38 @@ network.
 """
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
-from model_inputs import mock_model_input
-from db import mock_db_matchinfo_list
-'''Finish db.py, model.py and model_inputs.py
-    model.py: 
-        copy-paste from a Keras tutorial, change input_shape to (10, 161, 2)
-    model_inputs.py: 
-        copy the mock function, and switch out all random.randint() calls to be something from a matchinfo object (or a player object sitting inside the matchinfo object)
-    db.py:
-        iterate over all matchIds
-        for each matchId, get a list of players from the Participants
+from model_inputs import match_info_to_nparray
+from db import db_matchinfo_list
+import numpy as np
+import tensorflow as tf
 
 
-'''
-match = mock_db_matchinfo_list()
-print(mock_model_input(match[0]))
-# model = Sequential()
-# model.add(Dense(10, input_shape=(10, 161, 2), activation='relu'))
-# model.add(Dense(10, activation='relu'))
-# model.add(Dense(10, activation='relu'))
-# model.add(Dense(10, activation='relu'))
-# model.add(Dense(1, activation='sigmoid'))
+matches = db_matchinfo_list(limit=10000)
 
-# model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
-# # fit the keras model on the dataset
-# model.fit(X, y, epochs=150, batch_size=10)
-# # evaluate the keras model
-# _, accuracy = model.evaluate(X, y)
-# print('Accuracy: %.2f' % (accuracy*100))
+for m in matches:
+    assert len(m.players) == 10
+
+converted = [match_info_to_nparray(m) for m in matches]
+
+x = np.zeros(shape=(len(matches), 10, 161, 2))
+
+for i in range(len(converted)):
+    x[i] = converted[i]
+
+y = np.array([1 if m.winner == 100 else 0 for m in matches])
+print(x.shape)
+print(y.shape)
+model = Sequential()
+model.add(Dense(161, input_shape=(10, 161, 2), activation='relu'))
+for i in range(20):
+    model.add(Dense(40, activation='relu'))
+model.add(Dense(1, activation='sigmoid'))
+
+model.compile(loss="mse", optimizer='adam', metrics=['accuracy'])
+# fit the keras model on the dataset
+model.fit(x[:-100], y[:-100], epochs=50, batch_size=100)
+
+# evaluate the keras model
+_, accuracy = model.evaluate(x[-100:], y[-100:])
+print('Accuracy: %.2f' % (accuracy*100))
 
