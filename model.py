@@ -11,7 +11,7 @@ import tensorflow as tf
 
 
 matches = db_matchinfo_list(limit=10000)
-
+print(matches)
 for m in matches:
     assert len(m.players) == 10
 
